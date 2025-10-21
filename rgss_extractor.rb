@@ -20,11 +20,10 @@ class RxdataExtractor
 
       ensure_destination_directory(dest_file)
 
-      final_dest_path = create_destination_path(dest_file)
       io_processors = get_io_processors(src_file, dest_file)
       options = build_conversion_options(version)
 
-      process_conversion(src_file, final_dest_path, io_processors[:loader], io_processors[:dumper], options)
+      process_conversion(src_file, dest_file, io_processors[:loader], io_processors[:dumper], options)
     end
 
     def convert_list(src_file_list, dest_file_list, version = :xp)
@@ -36,9 +35,8 @@ class RxdataExtractor
         src_file = src_file_list[i]
         dest_file = dest_file_list[i]
         validate_source_file(src_file)
-        final_dest_path = create_destination_path(dest_file)
         io_processors = get_io_processors(src_file, dest_file)
-        process_conversion(src_file, final_dest_path, io_processors[:loader], io_processors[:dumper], options)
+        process_conversion(src_file, dest_file, io_processors[:loader], io_processors[:dumper], options)
       end
     end
 
@@ -54,6 +52,7 @@ class RxdataExtractor
       end
       options = build_conversion_options(version)
 
+      dest_files = []
       files.each do |file|
         src_file = File.join(src_dir, file)
         dest_file = File.join(dest_dir, RGSS.change_extension(file, target_ext))
@@ -62,29 +61,30 @@ class RxdataExtractor
         loader = io_processors[:loader]
         dumper = io_processors[:dumper]
         RGSS.process_file(file, src_file, dest_file, target_ext, loader, dumper, options)
+        dest_files << dest_file
       end
+
+      dest_files
     end
 
     private
 
     def get_most_ext_name_in_dir(dir)
-      file_list_in_dir = Dir.entries(dir).reject { |entry| File.extname(entry) == '' }
-      ext_name_map = {}
+      # 筛选出所有非空扩展名，并收集起来
+      extensions = Dir.entries(dir)
+                      .reject { |entry| File.extname(entry).empty? }
+                      .map { |entry| File.extname(entry) }
 
-      file_list_in_dir.each do |file|
-        ext_name_map[File.extname(file)] = (ext_name_map[File.extname(file)] || 0) + 1
-      end
+      # 计算每个扩展名出现的次数
+      ext_counts = extensions.tally # 返回一个哈希，例如 {".rb"=>2, ".txt"=>1}
 
-      max_ext_key = ''
-      max_ext_num = 0
-      ext_name_map.each_key do |k|
-        if ext_name_map[k] > max_ext_num
-          max_ext_key = k
-          max_ext_num = ext_name_map[k]
-        end
-      end
+      # 找出出现次数最多的扩展名
+      # max_by 会返回一个数组 [key, value]，如果 ext_counts 为空则返回 nil
+      most_common_ext_entry = ext_counts.max_by { |_ext, count| count }
 
-      max_ext_num.positive? && max_ext_key != 0 ? max_ext_key : (raise 'No file with valid ext name')
+      raise 'No file with valid ext name found in directory' unless most_common_ext_entry
+
+      most_common_ext_entry.first # 返回最常见的扩展名字符串
     end
 
     def validate_source_file(src_file)
@@ -108,11 +108,6 @@ class RxdataExtractor
       FileUtils.mkdir_p(dest_dir) unless File.exist?(dest_dir)
     end
 
-    def create_destination_path(dest_file)
-      dest_dir = File.dirname(dest_file)
-      File.join(dest_dir, File.basename(dest_file, '.*') + File.extname(dest_file))
-    end
-
     def get_io_processors(src_file, dest_file)
       exts = { from: File.extname(src_file), to: File.extname(dest_file) }
 
@@ -130,17 +125,6 @@ class RxdataExtractor
       end
     end
 
-    def get_convert_direction(from, to)
-      case [from, to]
-      when [RGSS::XP_DATA_EXT, RGSS::YAML_EXT]
-        :data_bin_to_text
-      when [RGSS::YAML_EXT, RGSS::XP_DATA_EXT]
-        :data_text_to_bin
-      else
-        raise "Unsupported direction for [ #{from}, #{to} ]."
-      end
-    end
-
     def process_conversion(src_file, final_dest_path, loader, dumper, options)
       dest_ext = File.extname(final_dest_path)
 
@@ -148,6 +132,10 @@ class RxdataExtractor
                         options)
     end
   end
+end
+
+def cvt_file_path_list_to_abs_path_list(file_path_list)
+  file_path_list.map { |file_path| File.absolute_path(file_path) }
 end
 
 options = {}
@@ -158,6 +146,8 @@ OptionParser.new do |opts|
     options[:verbose] = true
   end
 
+  # 当使用 --input-file / --output-file 组合时，
+  # 需要用户手动输入源文件名和目标文件名，文件后缀决定了文件转换的方向
   opts.on('-i', '--input-file FILE', String, 'Input file, use with `-o`') do |input_file|
     options[:input_file] = input_file
   end
@@ -166,6 +156,8 @@ OptionParser.new do |opts|
     options[:output_file] = output_file
   end
 
+  # 当使用 --input-file-list / --output-file-list 组合时，
+  # 需要用户手动输入源文件名列表和目标文件名列表，项目之间通过 ',' 分隔，文件后缀决定了文件转换的方向
   opts.on('-I', '--input-file-list FILE_LIST', String,
           'Input file list, comma separated, use with `-O`') do |input_file_list|
     options[:input_file_list] = input_file_list.split(',')
@@ -176,6 +168,8 @@ OptionParser.new do |opts|
     options[:output_file_list] = output_file_list.split(',')
   end
 
+  # 当使用 --source-dir / --dest-dir / --target-ext 组合时，
+  # 脚本将会根据源文件名自动生成目标位置的文件名，并添加用户给出的目标拓展名作为后缀
   opts.on('-S', '--source-dir DIR', String, 'Source data directory, use with `-D`') do |src_dir|
     options[:src_dir] = src_dir
   end
@@ -188,6 +182,10 @@ OptionParser.new do |opts|
     options[:target_ext] = target_ext
   end
 
+  opts.on('-s', '--show-dest-files', 'Show output destination files') do
+    options[:show_dest_files] = true
+  end
+
   opts.on('-h', '--help', 'Show this menu') do
     puts opts
     exit
@@ -195,7 +193,9 @@ OptionParser.new do |opts|
 end.parse!
 
 begin
+  # 功能选项
   verbose = options[:verbose]
+  show_dest_files = options[:show_dest_files]
 
   input_file = options[:input_file]
   output_file = options[:output_file]
@@ -207,18 +207,27 @@ begin
   dest_dir = options[:dest_dir]
   target_ext = options[:target_ext]
 
+  output_files = []
   if input_file && output_file
+    # 转换的文件列表中只有一个文件
+    output_files.append(output_file)
     puts "#{input_file} #{output_file}" if verbose
     RxdataExtractor.convert(input_file, output_file)
   end
   if input_file_list && output_file_list
+    # 转换的文件列表实际为用户输入的文件列表
+    output_files = output_file_list.split(',').map(&:strip)
     puts "#{input_file_list} #{output_file_list}" if verbose
     RxdataExtractor.convert_list(input_file_list, output_file_list)
   end
   if src_dir && dest_dir && target_ext
     puts "#{src_dir} #{dest_dir} #{target_ext}" if verbose
-    RxdataExtractor.convert_dir(src_dir, dest_dir, target_ext)
+    # 转换的文件列表需要由转换处取得
+    output_files = RxdataExtractor.convert_dir(src_dir, dest_dir, target_ext)
   end
+
+  output_files = cvt_file_path_list_to_abs_path_list(output_files)
+  puts "[dest file(s)]: #{output_files.join(', ')}" if show_dest_files
 rescue StandardError => e
   puts e.message
   puts e.backtrace_locations
