@@ -216,7 +216,7 @@ begin
   end
   if input_file_list && output_file_list
     # 转换的文件列表实际为用户输入的文件列表
-    output_files = output_file_list.split(',').map(&:strip)
+    output_files = output_file_list
     puts "#{input_file_list} #{output_file_list}" if verbose
     RxdataExtractor.convert_list(input_file_list, output_file_list)
   end
